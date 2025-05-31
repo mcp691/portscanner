@@ -1,78 +1,129 @@
-#include "stdio.h"
-#include "sys/socket.h"
-#include "errno.h"
-#include "netdb.h"
-#include "string.h"
-#include "stdlib.h"
- 
-int main(int argc , char **argv) {
-    struct hostent *host;
-    int err, i , sock ,start , end;
-    char hostname[100];
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+
+#define MAX_THREADS 200
+
+typedef struct {
     struct sockaddr_in sa;
-     
-    //Get the hostname to scan
-    printf("Enter hostname or IP : ");
-    gets(hostname);
-     
-    //Get start port number
-    printf("\nEnter start port number : ");
-    scanf("%d" , &start);
-     
-    //Get end port number
-    printf("Enter end port number : ");
-    scanf("%d" , &end);
- 
-    //Initialise the sockaddr_in structure
-    strncpy((char*)&sa , "" , sizeof sa);
-    sa.sin_family = AF_INET;
-     
-    //direct ip address, use it
-    if(isdigit(hostname[0])) {
-        printf("Doing inet_addr...");
-        sa.sin_addr.s_addr = inet_addr(hostname);
-        printf("Done\n");
+    uint16_t port;
+} ScanParams;
+
+void *scan_port(void *arg) {
+    ScanParams *params = (ScanParams *)arg;
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        free(params);
+        pthread_exit(NULL);
     }
-    //Resolve hostname to ip address
-    else if( (host = gethostbyname(hostname)) != 0) {
-        printf("Doing gethostbyname...");
-        strncpy((char*)&sa.sin_addr , (char*)host->h_addr , sizeof sa.sin_addr);
-        printf("Done\n");
+    
+    params->sa.sin_port = htons(params->port);
+    if (connect(sock, (struct sockaddr *)&params->sa, sizeof(params->sa)) == 0) {
+        printf("Port %-5d is open\n", params->port);
     }
-    else {
-        herror(hostname);
-        exit(2);
-    }
-     
-    //Start the port scan loop
-    printf("Starting the portscan loop : \n");
-    for( i = start ; i <= end ; i++) {
-        //Fill in the port number
-        sa.sin_port = htons(i);
-        //Create a socket of type internet
-        sock = socket(AF_INET , SOCK_STREAM , 0);
-         
-        //Check whether socket created fine or not
-        if(sock < 0) {
-            perror("\nSocket");
+    
+    close(sock);
+    free(params);
+    pthread_exit(NULL);
+}
+
+void display_help() {
+    printf("Usage: sscan [options]\n");
+    printf("Options:\n");
+    printf("  --help                    Show this help message\n");
+    printf("  --version, -v             Show version\n");
+    printf("  -h <addr>                 Hostname or IP address\n");
+    printf("  -p <start-end>|<port>     Port range to scan\n");
+}
+
+int main(int argc, char **argv) {
+    struct hostent *host;
+    struct sockaddr_in sa;
+    uint8_t ip_a, ip_b, ip_c, ip_d;
+    uint16_t start_port = 1;
+    uint16_t end_port = 65535;
+    char hostname[100] = {0};
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--help") == 0) {
+            display_help();
+            exit(0);
+        } else if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
+            printf("SockScan v0.1\n");
+            exit(0);
+        } else if (strcmp(argv[i], "-h") == 0 && i + 1 < argc) {
+            strncpy(hostname, argv[++i], sizeof(hostname) - 1);
+        } else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
+            if (sscanf(argv[++i], "%hu-%hu", &start_port, &end_port)) {
+                printf("Scanning ports from %hu to %hu\n", start_port, end_port);
+            } else if (sscanf(argv[++i], "%hu", &start_port)) {
+                sscanf(argv[i], "%hu", &end_port);
+                printf("Scanning port %hu\n", start_port);
+            } else {
+                fprintf(stderr, "Invalid port specification: %s\n", argv[i]);
+                exit(1);
+            }
+        } else {
+            fprintf(stderr, "Invalid option: %s\n", argv[i]);
+            display_help();
             exit(1);
         }
-        //Connect using that socket and sockaddr structure
-        err = connect(sock , (struct sockaddr*)&sa , sizeof sa);
-         
-        //not connected
-        if( err < 0 ) {
-            //printf("%s %-5d %s\r" , hostname , i, strerror(errno));
-            fflush(stdout);
-        }
-        //connected
-        else {
-            printf("%-5d open\n",  i);
-        }
-        close(sock);
     }
-     
-    printf("\r");
-    fflush(stdout);
-    return(0);
+
+    if (hostname[0] == '\0' || start_port == 0 || end_port == 0) {
+        fprintf(stderr, "Missing required host (-h) or ports (-p) argument\n");
+        exit(1);
+    }
+
+    if (start_port < 1 || end_port > 65535 || start_port > end_port) {
+        fprintf(stderr, "Invalid port range.\n");
+        exit(1);
+    }
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+
+    sa.sin_addr.s_addr = inet_addr(hostname);
+    if (sa.sin_addr.s_addr == INADDR_NONE) {
+        host = gethostbyname(hostname);
+        if (!host) {
+            herror("gethostbyname");
+            exit(2);
+        }
+        memcpy(&sa.sin_addr, host->h_addr_list[0], host->h_length);
+    }
+
+    pthread_t threads[MAX_THREADS];
+    int thread_count = 0;
+
+    for (uint16_t port = start_port; port < end_port; port++) {
+        ScanParams *params = malloc(sizeof(ScanParams));
+        if (!params) continue;
+
+        memcpy(&params->sa, &sa, sizeof(sa));
+        params->port = port;
+
+        pthread_create(&threads[thread_count++], NULL, scan_port, params);
+
+        if (thread_count >= MAX_THREADS) {
+            for (int j = 0; j < thread_count; j++) {
+                pthread_join(threads[j], NULL);
+            }
+            thread_count = 0;
+        }
+    }
+
+    for (int j = 0; j < thread_count; j++) {
+        pthread_join(threads[j], NULL);
+    }
+
+    return 0;
 }
