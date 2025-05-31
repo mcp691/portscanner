@@ -47,9 +47,8 @@ void display_help() {
 int main(int argc, char **argv) {
     struct hostent *host;
     struct sockaddr_in sa;
-    uint8_t ip_a, ip_b, ip_c, ip_d;
-    uint16_t start_port = 1;
-    uint16_t end_port = 65535;
+    unsigned int start_port = 1;
+    unsigned int end_port = 65535;
     char hostname[100] = {0};
 
     for (int i = 1; i < argc; i++) {
@@ -62,11 +61,11 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-h") == 0 && i + 1 < argc) {
             strncpy(hostname, argv[++i], sizeof(hostname) - 1);
         } else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
-            if (sscanf(argv[++i], "%hu-%hu", &start_port, &end_port)) {
-                printf("Scanning ports from %hu to %hu\n", start_port, end_port);
-            } else if (sscanf(argv[++i], "%hu", &start_port)) {
-                sscanf(argv[i], "%hu", &end_port);
-                printf("Scanning port %hu\n", start_port);
+            if (sscanf(argv[++i], "%u-%u", &start_port, &end_port)) {
+                printf("Scanning ports from %u to %u\n", start_port, end_port);
+            } else if (sscanf(argv[++i], "%u", &start_port)) {
+                sscanf(argv[i], "%u", &end_port);
+                printf("Scanning port %u\n", start_port);
             } else {
                 fprintf(stderr, "Invalid port specification: %s\n", argv[i]);
                 exit(1);
@@ -84,7 +83,7 @@ int main(int argc, char **argv) {
     }
 
     if (start_port < 1 || end_port > 65535 || start_port > end_port) {
-        fprintf(stderr, "Invalid port range.\n");
+        fprintf(stderr, "Invalid port range. Ports are within range 1-65535\n");
         exit(1);
     }
 
