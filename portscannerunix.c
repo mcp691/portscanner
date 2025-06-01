@@ -4,32 +4,55 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <pthread.h>
 
-#define MAX_THREADS 200
+typedef enum {
+    PROTO_TCP,
+    PROTO_UDP
+} Protocol;
 
 typedef struct {
     struct sockaddr_in sa;
     uint16_t port;
+    Protocol protocol;
 } ScanParams;
+
+#define MAX_THREADS 200
 
 void *scan_port(void *arg) {
     ScanParams *params = (ScanParams *)arg;
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    int sock;
+
+    if (params->protocol == PROTO_TCP) {
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+    } else {
+        sock = socket(AF_INET, SOCK_DGRAM, 0);
+    }
     if (sock < 0) {
         free(params);
         pthread_exit(NULL);
     }
-    
+
     params->sa.sin_port = htons(params->port);
+
+    // Set a timeout for connect to avoid long delays or false positives
+    struct timeval timeout;
+    timeout.tv_sec = 1;  // 1 second timeout
+    timeout.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    char *protocol;
     if (connect(sock, (struct sockaddr *)&params->sa, sizeof(params->sa)) == 0) {
-        printf("Port %-5d is open\n", params->port);
+        protocol = "tcp";
+        printf("%-6d %s      open\n", params->port, protocol);
     }
-    
+
     close(sock);
     free(params);
     pthread_exit(NULL);
@@ -45,7 +68,7 @@ void display_help() {
 }
 
 int main(int argc, char **argv) {
-    struct hostent *host;
+    struct hostent *host = NULL;
     struct sockaddr_in sa;
     unsigned int start_port = 1;
     unsigned int end_port = 65535;
@@ -61,11 +84,12 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-h") == 0 && i + 1 < argc) {
             strncpy(hostname, argv[++i], sizeof(hostname) - 1);
         } else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
-            if (sscanf(argv[++i], "%u-%u", &start_port, &end_port)) {
-                printf("Scanning ports from %u to %u\n", start_port, end_port);
-            } else if (sscanf(argv[++i], "%u", &start_port)) {
-                sscanf(argv[i], "%u", &end_port);
-                printf("Scanning port %u\n", start_port);
+            ++i;
+
+            if (sscanf(argv[i], "%u", &start_port) == 1 && strchr(argv[i], '-') == NULL) {
+                end_port = start_port;
+            } else if (sscanf(argv[i], "%u-%u", &start_port, &end_port) == 2) {
+                // valid range
             } else {
                 fprintf(stderr, "Invalid port specification: %s\n", argv[i]);
                 exit(1);
@@ -103,12 +127,14 @@ int main(int argc, char **argv) {
     pthread_t threads[MAX_THREADS];
     int thread_count = 0;
 
-    for (uint16_t port = start_port; port < end_port; port++) {
+    printf("%-6s %-6s %-6s %-6s %-6s\n", "PORT", "PROTOCOL", "STATE", "SERVICE", "VERSION");
+    for (uint16_t port = start_port; port <= end_port; port++) {
         ScanParams *params = malloc(sizeof(ScanParams));
         if (!params) continue;
 
         memcpy(&params->sa, &sa, sizeof(sa));
         params->port = port;
+        params->protocol = PROTO_TCP;
 
         pthread_create(&threads[thread_count++], NULL, scan_port, params);
 
@@ -117,6 +143,10 @@ int main(int argc, char **argv) {
                 pthread_join(threads[j], NULL);
             }
             thread_count = 0;
+        }
+
+        if (port == end_port) {
+            break;
         }
     }
 
